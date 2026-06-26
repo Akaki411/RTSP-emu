@@ -87,7 +87,6 @@ changes you make apply **for the current session only** and reset on restart.
 | ---------------------- | ------------------------------------ | ------- |
 | `rtsp_port`            | TCP port the RTSP server listens on  | `8554`  |
 | `rtsp_path`            | Stream path appended to the URL      | `/`     |
-| `default_camera_index` | Camera index selected at startup     | `0`     |
 | `frame_width`          | Requested capture width              | `640`   |
 | `frame_height`         | Requested capture height             | `480`   |
 | `fps`                  | Capture / streaming frame rate       | `30`    |
