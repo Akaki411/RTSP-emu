@@ -1,4 +1,5 @@
 opencv-python
 pillow
-pygrabber; platform_system == "Windows"
+pygrabber; platform_system == "win32"
+patchelf; platform_system == "linux"
 nuitka

@@ -1,6 +1,6 @@
  # RTSP IP Camera Emulator
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue)
+![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![License](https://img.shields.io/badge/License-GPL_2.0-lightgrey)
 
 A lightweight desktop tool that turns your computer's webcam into an RTSP IP

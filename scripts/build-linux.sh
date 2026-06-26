@@ -17,7 +17,6 @@ if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR"
 fi
 
 
-clear
 echo "Checking the virtual environment..."
 if [ ! -d "venv" ]; then
     echo "Creating a virtual environment..."
@@ -28,7 +27,6 @@ echo "Activating the virtual environment..."
 source venv/bin/activate
 
 
-clear
 echo "Installing dependencies..."
 pip install -r requirements.txt
 
