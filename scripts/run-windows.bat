@@ -42,23 +42,10 @@ if errorlevel 1 (
 )
 
 cls
-python -m nuitka ^
-    --onefile ^
-    --msvc=latest ^
-    --assume-yes-for-downloads ^
-    --enable-plugin=tk-inter ^
-    --include-package=pygrabber ^
-    --windows-console-mode=disable ^
-    --output-dir=build ^
-    --output-filename=rtsp-emulator ^
-    --jobs=4 ^
-    --lto=yes ^
-    --show-progress ^
-    --show-memory ^
-    emulator.py
+python emulator.py
 
 if errorlevel 1 (
-    echo [ERROR] Compilation error
+    echo [ERROR] Start error
     pause
     pause & exit /b 1
 )

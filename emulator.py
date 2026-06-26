@@ -1,18 +1,27 @@
 import os
 import sys
-import json
 import socket
 import struct
 import time
 import threading
 from collections import deque
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 import cv2
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 
 IS_WINDOWS = sys.platform.startswith("win")
 IS_LINUX = sys.platform.startswith("linux")
+
+OPEN_FILE_LABEL = "Open video file..."
+DEFAULT_SETTINGS = {
+    "rtsp_port": 8554,
+    "rtsp_path": "/",
+    "default_camera_index": 0,
+    "frame_width": 640,
+    "frame_height": 480,
+    "fps": 30,
+}
 
 
 def camera_backend():
@@ -243,7 +252,12 @@ class App:
         self.latest_frame = None
         self.running = True
         self.rtsp_server = None
-        self.camera_map = {}
+
+        self.source_map = {}
+        self.video_files = []
+        self.source_kind = "camera"
+        self.source_fps = self.fps
+        self.current_source_name = ""
 
         self.client_count = 0
         self.client_lock = threading.Lock()
@@ -258,17 +272,27 @@ class App:
 
         self.overlay_font = self.load_overlay_font(12)
 
-        self.video_label = tk.Label(root, bg="black")
+        self.setup_combobox_style()
+
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        self.preview_tab = tk.Frame(self.notebook, bg="black")
+        self.settings_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.preview_tab, text="Preview")
+        self.notebook.add(self.settings_tab, text="Settings")
+
+        self.video_label = tk.Label(self.preview_tab, bg="black")
         self.video_label.pack(fill=tk.BOTH, expand=True)
 
-        self.setup_combobox_style()
-        self.camera_selector = ttk.Combobox(root, state="readonly", width=28, style="Dark.TCombobox")
-        self.camera_selector.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=10)
+        self.source_selector = ttk.Combobox(self.preview_tab, state="readonly", width=30, style="Dark.TCombobox")
+        self.source_selector.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=10)
+        self.source_selector.bind("<<ComboboxSelected>>", self.on_source_changed)
 
-        self.populate_cameras()
-        self.camera_selector.bind("<<ComboboxSelected>>", self.on_camera_changed)
+        self.build_settings_tab()
 
-        self.init_camera(self.current_camera_index)
+        self.populate_sources()
+        self.activate_source(self.source_selector.get())
 
         self.capture_thread = threading.Thread(target=self.update_camera_feed, daemon=True)
         self.capture_thread.start()
@@ -327,13 +351,24 @@ class App:
                 continue
         return ImageFont.load_default()
 
-    def init_camera(self, index):
+    def set_source(self, kind, value):
         with self.cap_lock:
             if self.cap is not None:
                 self.cap.release()
-            self.cap = cv2.VideoCapture(index, camera_backend())
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                self.cap = None
+
+            if kind == "camera":
+                self.cap = cv2.VideoCapture(value, camera_backend())
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                self.source_fps = self.fps
+                self.current_camera_index = value
+            else:
+                self.cap = cv2.VideoCapture(value)
+                file_fps = self.cap.get(cv2.CAP_PROP_FPS)
+                self.source_fps = file_fps if file_fps and file_fps > 0 else self.fps
+
+            self.source_kind = kind
 
     def get_camera_devices(self):
         if IS_WINDOWS:
@@ -368,7 +403,7 @@ class App:
             return devices
         return []
 
-    def populate_cameras(self):
+    def populate_sources(self):
         available = self.get_camera_devices()
 
         if not available:
@@ -381,21 +416,67 @@ class App:
         if not available:
             available = [(self.current_camera_index, f"Camera {self.current_camera_index}")]
 
-        self.camera_map = {name: idx for idx, name in available}
-        values = [name for idx, name in available]
-        self.camera_selector["values"] = values
+        self.source_map = {}
+        for idx, name in available:
+            self.source_map[name] = ("camera", idx)
+        for label, path in self.video_files:
+            self.source_map[label] = ("file", path)
 
-        default_name = next((name for idx, name in available if idx == self.current_camera_index),values[0])
-        self.camera_selector.set(default_name)
-        print(f"[CAM] Detected cameras: {values}")
+        self._refresh_source_values()
 
-    def on_camera_changed(self, event):
-        selected = self.camera_selector.get()
-        idx = self.camera_map.get(selected, self.current_camera_index)
-        if idx != self.current_camera_index:
-            self.current_camera_index = idx
-            self.init_camera(idx)
-            print(f"[CAM] Switched to: {selected} (index {idx})")
+        default_name = next(
+            (n for n, (k, v) in self.source_map.items() if k == "camera" and v == self.current_camera_index),
+            None,
+        )
+        if default_name is None:
+            default_name = next(iter(self.source_map))
+        self.source_selector.set(default_name)
+        print(f"[CAM] Detected cameras: {[n for n, (k, _) in self.source_map.items() if k == 'camera']}")
+
+    def _refresh_source_values(self):
+        self.source_selector["values"] = list(self.source_map.keys()) + [OPEN_FILE_LABEL]
+
+    def activate_source(self, name):
+        entry = self.source_map.get(name)
+        if not entry:
+            return
+        kind, value = entry
+        self.set_source(kind, value)
+        self.current_source_name = name
+        if kind == "camera":
+            print(f"[SRC] Camera: {name}")
+        else:
+            print(f"[SRC] Looping video file: {name}")
+
+    def on_source_changed(self, event=None):
+        selected = self.source_selector.get()
+        if selected == OPEN_FILE_LABEL:
+            self.browse_video_file()
+            return
+        self.activate_source(selected)
+
+    def browse_video_file(self):
+        path = filedialog.askopenfilename(
+            title="Select video file",
+            filetypes=[
+                ("Video files", "*.mp4 *.avi *.mkv *.mov *.webm *.flv *.wmv *.m4v *.mpg *.mpeg"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            self.source_selector.set(self.current_source_name)
+            return
+
+        label = os.path.basename(path)
+        if label in self.source_map and self.source_map[label] != ("file", path):
+            label = f"{label}  [{path}]"
+        if not any(p == path for _, p in self.video_files):
+            self.video_files.append((label, path))
+        self.source_map[label] = ("file", path)
+
+        self._refresh_source_values()
+        self.source_selector.set(label)
+        self.activate_source(label)
 
     def update_camera_feed(self):
         while self.running:
@@ -403,12 +484,84 @@ class App:
             with self.cap_lock:
                 if self.cap and self.cap.isOpened():
                     ret, frame = self.cap.read()
-            
+                    if not ret:
+                        # End of a video file -> rewind to loop it seamlessly.
+                        if self.source_kind == "file":
+                            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        frame = None
+
             if frame is not None:
                 with self.frame_lock:
                     self.latest_frame = frame.copy()
-            
-            time.sleep(1.0 / self.fps)
+
+            time.sleep(1.0 / max(1.0, self.source_fps))
+
+    def build_settings_tab(self):
+        fields = [
+            ("RTSP port", "rtsp_port"),
+            ("RTSP path", "rtsp_path"),
+            ("Default camera index", "default_camera_index"),
+            ("Frame width", "frame_width"),
+            ("Frame height", "frame_height"),
+            ("FPS", "fps"),
+        ]
+        self.settings_vars = {}
+
+        container = ttk.Frame(self.settings_tab, padding=16)
+        container.pack(anchor="nw", fill=tk.X)
+
+        for row, (label, key) in enumerate(fields):
+            ttk.Label(container, text=label).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 12))
+            var = tk.StringVar(value=str(self.config.get(key, DEFAULT_SETTINGS.get(key, ""))))
+            ttk.Entry(container, textvariable=var, width=24).grid(row=row, column=1, sticky="w", pady=4)
+            self.settings_vars[key] = var
+
+        ttk.Button(container, text="Apply", command=self.apply_settings).grid(row=len(fields), column=0, columnspan=2, sticky="w", pady=(16, 0))
+        ttk.Label(
+            container,
+            text="Settings apply for the current session only and reset to defaults\n"
+                 "on restart. Port/path changes restart the RTSP server; resolution\n"
+                 "applies to camera sources.",
+            foreground="#666666",
+        ).grid(row=len(fields) + 1, column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+    def apply_settings(self):
+        new = {}
+        try:
+            new["rtsp_port"] = int(self.settings_vars["rtsp_port"].get())
+            new["default_camera_index"] = int(self.settings_vars["default_camera_index"].get())
+            new["frame_width"] = int(self.settings_vars["frame_width"].get())
+            new["frame_height"] = int(self.settings_vars["frame_height"].get())
+            new["fps"] = max(1, int(self.settings_vars["fps"].get()))
+        except ValueError:
+            messagebox.showerror("Invalid settings", "Port, indices and sizes must be integers.")
+            return
+
+        path = self.settings_vars["rtsp_path"].get().strip() or "/"
+        if not path.startswith("/"):
+            path = "/" + path
+        new["rtsp_path"] = path
+
+        self.config.update(new)
+        self.width = new["frame_width"]
+        self.height = new["frame_height"]
+        self.fps = new["fps"]
+
+        self.restart_rtsp_server()
+        if self.source_kind == "camera":
+            self.set_source("camera", self.current_camera_index)
+        print("[CFG] Settings applied")
+
+    def restart_rtsp_server(self):
+        if self.rtsp_server:
+            self.rtsp_server.running = False
+            if self.rtsp_server.sock:
+                try:
+                    self.rtsp_server.sock.close()
+                except Exception:
+                    pass
+        self.rtsp_server = RTSPServer(self)
+        self.rtsp_server.start()
 
     def update_gui_frame(self):
         if not self.running:
@@ -424,12 +577,26 @@ class App:
         if frame is not None:
             cv2_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(cv2_image)
+            # Fit the preview into a fixed-size canvas so switching to a video of
+            # a different resolution never resizes the window or rescales the UI.
+            pil_image = self.fit_to_canvas(pil_image, self.width, self.height)
             self.draw_overlay(pil_image, frame)
             imgtk = ImageTk.PhotoImage(image=pil_image)
             self.video_label.imgtk = imgtk
             self.video_label.configure(image=imgtk)
 
         self.root.after(30, self.update_gui_frame)
+
+    def fit_to_canvas(self, img, target_w, target_h):
+        if img.width == 0 or img.height == 0:
+            return img
+        scale = min(target_w / img.width, target_h / img.height)
+        new_w = max(1, round(img.width * scale))
+        new_h = max(1, round(img.height * scale))
+        resized = img.resize((new_w, new_h), Image.BILINEAR)
+        canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+        canvas.paste(resized, ((target_w - new_w) // 2, (target_h - new_h) // 2))
+        return canvas
 
     def update_bitrate(self):
         now = time.time()
@@ -485,21 +652,7 @@ class App:
 
 
 if __name__ == "__main__":
-    config_path = "config.json"
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            config_data = json.load(f)
-    else:
-        config_data = {
-            "rtsp_port": 8554,
-            "rtsp_path": "/",
-            "default_camera_index": 0,
-            "frame_width": 640,
-            "frame_height": 480,
-            "fps": 30
-        }
-        with open(config_path, "w") as f:
-            json.dump(config_data, f, indent=4)
+    config_data = dict(DEFAULT_SETTINGS)
 
     log_capture = LogCapture(sys.stdout)
     sys.stdout = log_capture
